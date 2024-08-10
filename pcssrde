@@ -1,0 +1,265 @@
+clc;
+clear all;
+format long;
+format compact;
+
+problem_size = 30;
+max_nfes = 10000 * problem_size;
+rand('seed', sum(100 * clock));
+outcome = []; 
+val_2_reach = 10^(-8);
+runs=51;
+fhd=@cec17_func;
+for func = 1:30
+  optimum = func * 100.0;
+  fprintf('\n-------------------------------------------------------\n')
+  fprintf('Function = %d, Dimension size = %d\n', func, problem_size) 
+  EUR=0.3;ro=0.1;fa=3;miu=1;wx=1;SDI=6;DT=1E-3;  
+  for run_id = 1 : runs
+    p_best_rate = 0.11;
+    arc_rate = 1.4;
+    memory_size = 5;
+    pop_size = 18 * problem_size;
+    mn=[];sd=[];bov=[];cov=[];
+    example=ones(1,problem_size);
+    flag=zeros(1,problem_size);
+    bsf_solution = zeros(1, problem_size);
+    G=1;nfes = 0;tt=0;
+    bsf_fit_var = 1e+30;
+    max_pop_size = pop_size;
+    min_pop_size = 4.0;
+    max_region = 100.0;
+    min_region = -100.0;
+    lu = [-100 * ones(1, problem_size); 100 * ones(1, problem_size)];
+    popold = repmat(lu(1, :), pop_size, 1) + rand(pop_size, problem_size) .* (repmat(lu(2, :) - lu(1, :), pop_size, 1));
+    pop = popold; 
+    fitness = feval(fhd,pop',func);
+    fitness = fitness';   
+    for i = 1 : pop_size
+      nfes = nfes + 1;
+      if fitness(i) < bsf_fit_var
+	      bsf_fit_var = fitness(i);
+	      bsf_solution = pop(i, :);
+      end
+	  if nfes > max_nfes; break; end
+    end    
+    cov(G,1)=bsf_fit_var;
+    bov(G,:)=bsf_solution;
+    memory_sf = 0.5 .* ones(memory_size, 1);
+    memory_cr = 0.5 .* ones(memory_size, 1);
+    memory_pos = 1;
+    archive.NP = arc_rate * pop_size;
+    archive.pop = zeros(0, problem_size);
+    archive.funvalues = zeros(0, 1);
+
+    while nfes < max_nfes
+      pop = popold; 
+      [temp_fit, sorted_index] = sort(fitness, 'ascend');
+      if temp_fit < bsf_fit_var
+          bsf_fit_var = temp_fit;
+          bsf_solution = popold(sorted_index(1), :);
+      end  
+      mem_rand_index = ceil(memory_size * rand(pop_size, 1));
+      mu_sf = memory_sf(mem_rand_index);
+      mu_cr = memory_cr(mem_rand_index);
+      cr = normrnd(mu_cr, 0.1);
+      term_pos = find(mu_cr == -1);
+      cr(term_pos) = 0;
+      cr = min(cr, 1);
+      cr = max(cr, 0);
+      sf = mu_sf + 0.1 * tan(pi * (rand(pop_size, 1) - 0.5));
+      pos = find(sf <= 0);
+      while ~ isempty(pos)
+          sf(pos) = mu_sf(pos) + 0.1 * tan(pi * (rand(length(pos), 1) - 0.5));
+          pos = find(sf <= 0);
+      end
+      sf = min(sf, 1); 
+      r0 = [1 : pop_size];
+      popAll = [pop; archive.pop];
+      [r1, r2] = gnR1R2(pop_size, size(popAll, 1), r0);      
+      pNP = max(round(p_best_rate * pop_size), 2);
+      randindex = ceil(rand(1, pop_size) .* pNP); 
+      randindex = max(1, randindex);
+      pbest = pop(sorted_index(randindex), :); 
+      vi = pop + sf(:, ones(1, problem_size)) .* (pbest - pop + pop(r1, :) - popAll(r2, :));
+      vi = boundConstraint(vi, pop, lu);
+      if tt==0
+          roh=corr(fitness,pop,'type','pearson');
+      else
+          roh=corr(cov,bov,'type','pearson');
+      end
+       for i=1:problem_size
+            if roh(i)<=-ro && roh(i)>=-1
+               example(i)=max(pop(:,i));
+            elseif roh(i)>=ro && roh(i)<=1
+               example(i)=min(pop(:,i));
+            else
+               example(i)=mean(pop(:,i));
+            end
+       end
+      mask = rand(pop_size, problem_size) > cr(:, ones(1, problem_size));
+      rows = (1 : pop_size)'; cols = floor(rand(pop_size, 1) * problem_size)+1; 
+      jrand = sub2ind([pop_size problem_size], rows, cols); mask(jrand) = false;
+      ui = vi; ui(mask) = pop(mask);
+      xz=find(mask==0);
+      xe=repmat(example(1, :), pop_size, 1);
+      cre=EUR*ones(pop_size, problem_size);
+      maskb = rand(pop_size, problem_size) < cre;
+      maskb(xz) = false;ui(maskb) = xe(maskb);
+      children_fitness = feval(fhd, ui', func);
+      children_fitness = children_fitness';
+      for i = 1 : pop_size
+	    nfes = nfes + 1;
+        if children_fitness(i) < bsf_fit_var
+            bsf_fit_var = children_fitness(i);
+            bsf_solution = ui(i, :);
+        end
+	    if nfes > max_nfes; break; end
+      end
+      dif = abs(fitness - children_fitness);
+      I = (fitness > children_fitness);
+      goodCR = cr(I == 1);  
+      goodF = sf(I == 1);
+      dif_val = dif(I == 1); 
+      archive = updateArchive(archive, popold(I == 1, :), fitness(I == 1));
+      [fitness, I] = min([fitness, children_fitness], [], 2);      
+      popold = pop;
+      popold(I == 2, :) = ui(I == 2, :);
+      num_success_params = numel(goodCR);
+      if num_success_params > 0 
+          sum_dif = sum(dif_val);
+          dif_val = dif_val / sum_dif;
+          memory_sf(memory_pos) = (dif_val' * (goodF .^ 2)) / (dif_val' * goodF);
+          if max(goodCR) == 0 || memory_cr(memory_pos)  == -1
+              memory_cr(memory_pos)  = -1;
+          else
+              memory_cr(memory_pos) = (dif_val' * (goodCR .^ 2)) / (dif_val' * goodCR);
+          end
+          memory_pos = memory_pos + 1;
+          if memory_pos > memory_size;  memory_pos = 1; end
+      end
+      plan_pop_size = round((((min_pop_size - max_pop_size) / max_nfes) * nfes) + max_pop_size);
+
+      if pop_size > plan_pop_size
+          reduction_ind_num = pop_size - plan_pop_size;
+          if pop_size - reduction_ind_num <  min_pop_size; reduction_ind_num = pop_size - min_pop_size;end
+          pop_size = pop_size - reduction_ind_num;
+          for r = 1 : reduction_ind_num
+              [valBest indBest] = sort(fitness, 'ascend');
+              worst_ind = indBest(end);
+              popold(worst_ind,:) = [];
+              pop(worst_ind,:) = [];
+              fitness(worst_ind,:) = [];
+          end
+          archive.NP = round(arc_rate * pop_size); 
+          if size(archive.pop, 1) > archive.NP 
+              rndpos = randperm(size(archive.pop, 1));
+              rndpos = rndpos(1 : archive.NP);
+              archive.pop = archive.pop(rndpos, :);
+          end
+      end
+    sd(G,:)=std(popold,1,1);mn(G,:)=mean(popold,1);
+    if G>problem_size*SDI && mod(G,problem_size*SDI)==0 && abs(cov(G)-cov(G-problem_size*SDI))==0
+        H=sd(G,:)<=DT;HH=find(H==1);
+        if ~isempty(HH)
+            [~,best_fit_index]=min(fitness);tt=tt+1;
+            roh=corr(cov,bov,'type','pearson');
+            for i=1:problem_size
+                if roh(i)<=-ro && roh(i)>=-1
+                    example(i)=max(popold(:,i));flag(i)=-1;
+                elseif roh(i)>=ro && roh(i)<=1
+                    example(i)=min(popold(:,i));flag(i)=1;
+                else
+                    example(i)=mean(popold(:,i));
+                end
+            end
+            lenhh=length(HH);popoldn=popold;
+            temp_NP = (1:pop_size)' ~= best_fit_index;
+            for x=1:lenhh
+                Dis=abs((max(popold(:,HH(x)))-bsf_solution(1,HH(x)))/(max(popold(:,HH(x)))-min(popold(:,HH(x)))));
+                if isnan(Dis) || isinf(Dis) || Dis>wx
+                    Dis=wx;
+                end
+                ReduceInterval=max(Dis,abs(1-Dis));
+                if flag(HH(x))==1
+                    if example(1,HH(x))<0.9*max_region
+                        lu(2,HH(x))=lu(2,HH(x))-ReduceInterval;
+                        lu(2,HH(x))=max(mn(G,HH(x)),lu(2,HH(x)));
+                    end
+                    miuMuteDim = abs((example(1,HH(x)) - lu(1,HH(x))) / (mn(G,HH(x))-lu(1,HH(x))));
+                    if miuMuteDim < 0.001
+                        miuMuteDim = 0.001;                       
+                    end
+                    if miuMuteDim > miu || isnan(miuMuteDim)
+                        miuMuteDim = miu;                       
+                    end
+                    stdMuteDim=max(miuMuteDim, 1-miuMuteDim)*exp(-fa*nfes/max_nfes);
+                    if stdMuteDim < 0.001
+                        stdMuteDim = 0.001;                       
+                    end
+                    temp_X = normrnd(miuMuteDim, stdMuteDim, sum(temp_NP), 1);
+                    popold(temp_NP,HH(x))=lu(1,HH(x))+temp_X *(mn(G,HH(x))-lu(1,HH(x))); 
+                elseif flag(HH(x))==-1
+                    if example(1,HH(x))>0.9*min_region
+                        lu(1,HH(x))=lu(1,HH(x))+ReduceInterval;
+                        lu(1,HH(x))=min(mn(G,HH(x)),lu(1,HH(x)));
+                    end
+                    miuMuteDim =abs((example(1,HH(x)) - mn(G,HH(x))) / (lu(2,HH(x)) - mn(G,HH(x)))); 
+                    if miuMuteDim < 0.001
+                        miuMuteDim = 0.001;                       
+                    end
+                    if miuMuteDim > miu || isnan(miuMuteDim)
+                        miuMuteDim = miu;                       
+                    end
+                    stdMuteDim=max(miuMuteDim, 1-miuMuteDim)*exp(-fa*nfes/max_nfes);
+                    if stdMuteDim < 0.001
+                        stdMuteDim = 0.001;                       
+                    end
+                    temp_X = normrnd(miuMuteDim, stdMuteDim, sum(temp_NP), 1);                               
+                    popold(temp_NP,HH(x))=mn(G,HH(x))+temp_X *(lu(2,HH(x))-mn(G,HH(x)));
+                else
+                    lu(2,HH(x))=lu(2,HH(x))-ReduceInterval;
+                    lu(1,HH(x))=lu(1,HH(x))+ReduceInterval;
+                    if lu(2,HH(x))<lu(1,HH(x))
+                        lu(2,HH(x))=max(mn(G,HH(x)),lu(2,HH(x)));
+                        lu(1,HH(x))=min(mn(G,HH(x)),lu(1,HH(x)));  
+                    end
+                    miuMuteDim = (example(1,HH(x)) - lu(1,HH(x))) / (lu(2,HH(x)) - lu(1,HH(x)));
+                    if miuMuteDim < 0.001 
+                        miuMuteDim = 0.001;                       
+                    end
+                    if miuMuteDim > miu || isnan(miuMuteDim)
+                        miuMuteDim = miu;                       
+                    end
+                    stdMuteDim=max(miuMuteDim, 1-miuMuteDim)*exp(-fa*nfes/max_nfes);
+                    if stdMuteDim < 0.001
+                        stdMuteDim = 0.001;                       
+                    end
+                    temp_X = normrnd(miuMuteDim, stdMuteDim, sum(temp_NP), 1);                               
+                    popold(temp_NP,HH(x))=lu(1,HH(x))+temp_X *(lu(2,HH(x))-lu(1,HH(x)));
+                end
+            end
+            [NP, ~] = size(popold);
+            xl = repmat(lu(1, :), NP, 1);
+            xu = repmat(lu(2, :), NP, 1);
+            popold(popold>xu | popold<xl) = popoldn(popold>xu | popold<xl);
+            popold(isnan(popold) | isinf(popold)) = popoldn(isnan(popold) | isinf(popold));
+            uui=popold([1:pop_size]'~=best_fit_index,:);
+            fitness1 = feval(fhd, uui', func);
+            fitness([1:pop_size]'~=best_fit_index,1) = fitness1';
+        end
+    end
+    G=G+1;
+    cov(G,1)=bsf_fit_var;
+    bov(G,:)=bsf_solution;
+    end
+    bsf_error_val = bsf_fit_var - optimum;
+    if bsf_error_val < val_2_reach
+        bsf_error_val = 0;
+    end
+    fprintf('%d th run, best-so-far error value = %1.8e\n', run_id , bsf_error_val)
+    outcome(func,run_id)=bsf_error_val;  
+  end 
+end 
+file_name=sprintf('Results\\SSRAXL_F%s_%sD',int2str(func),int2str(problem_size));
+save(file_name,'outcome');
